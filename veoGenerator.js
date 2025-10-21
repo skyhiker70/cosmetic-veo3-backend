@@ -1,4 +1,5 @@
 const { GoogleAuth } = require('google-auth-library');
+const { Storage } = require('@google-cloud/storage');
 
 // Initialize Google Auth with credentials from environment
 function getAuthClient() {
@@ -24,6 +25,53 @@ function getAuthClient() {
     });
 
     return auth;
+}
+
+// Initialize Cloud Storage
+function getStorageClient() {
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    const credentials = JSON.parse(credentialsJson);
+
+    const storage = new Storage({
+        credentials: credentials,
+        projectId: credentials.project_id
+    });
+
+    return storage;
+}
+
+// Generate signed URL for GCS file
+async function getSignedUrl(gcsUri) {
+    try {
+        // Parse GCS URI: gs://bucket-name/path/to/file.mp4
+        const match = gcsUri.match(/^gs:\/\/([^\/]+)\/(.+)$/);
+        if (!match) {
+            throw new Error('Invalid GCS URI format');
+        }
+
+        const bucketName = match[1];
+        const fileName = match[2];
+
+        console.log(`📦 Generating signed URL for: ${bucketName}/${fileName}`);
+
+        const storage = getStorageClient();
+        const bucket = storage.bucket(bucketName);
+        const file = bucket.file(fileName);
+
+        // Generate signed URL valid for 2 hours
+        const [url] = await file.getSignedUrl({
+            version: 'v4',
+            action: 'read',
+            expires: Date.now() + 2 * 60 * 60 * 1000, // 2 hours
+        });
+
+        console.log('✅ Signed URL generated');
+        return url;
+
+    } catch (error) {
+        console.error('❌ Failed to generate signed URL:', error);
+        throw error;
+    }
 }
 
 // Generate video prompt from product info
@@ -57,19 +105,24 @@ async function pollOperation(auth, projectId, location, operationId, maxAttempts
 
             const data = response.data;
             
+            console.log(`⏳ Attempt ${attempt + 1}/${maxAttempts}:`, data.done ? 'Done!' : 'Still generating...');
+            
             if (data.done) {
                 console.log('✅ Operation completed');
+                console.log('📦 Full response:', JSON.stringify(data.response, null, 2));
                 
                 if (data.response && data.response.videos && data.response.videos.length > 0) {
-                    const videoUrl = data.response.videos[0].gcsUri;
-                    console.log('🎬 Video URL:', videoUrl);
-                    return videoUrl;
+                    const gcsUri = data.response.videos[0].gcsUri;
+                    console.log('🎬 GCS URI:', gcsUri);
+                    
+                    // Convert GCS URI to signed URL
+                    const signedUrl = await getSignedUrl(gcsUri);
+                    return signedUrl;
                 }
                 
                 throw new Error('No video in response');
             }
 
-            console.log(`⏳ Attempt ${attempt + 1}/${maxAttempts}: Still generating...`);
             await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
             
         } catch (error) {
@@ -105,6 +158,10 @@ async function generateVeo3Video(productName, concept) {
         const modelId = 'veo-3.1-generate-preview';
         const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:predictLongRunning`;
 
+        // Use Cloud Storage bucket for output
+        const bucketName = 'cosmetic-veo-videos';
+        const outputUri = `gs://${bucketName}/videos/`;
+
         const requestBody = {
             instances: [
                 {
@@ -112,6 +169,7 @@ async function generateVeo3Video(productName, concept) {
                 }
             ],
             parameters: {
+                storageUri: outputUri,
                 sampleCount: 1,
                 aspectRatio: "16:9",
                 personGeneration: "allow_adult"
@@ -119,6 +177,8 @@ async function generateVeo3Video(productName, concept) {
         };
 
         console.log('📡 Sending request to Veo 3.1 API...');
+        console.log('📦 Output bucket:', outputUri);
+        
         const response = await client.request({
             url: url,
             method: 'POST',
@@ -134,12 +194,14 @@ async function generateVeo3Video(productName, concept) {
         console.log('⏳ Polling for completion (this takes 2-3 minutes)...');
         const videoUrl = await pollOperation(auth, projectId, location, operationId);
 
+        console.log('🎉 Final video URL:', videoUrl);
         return videoUrl;
 
     } catch (error) {
         console.error('❌ Veo 3.1 generation error:', error);
         
         if (error.response) {
+            console.error('Response status:', error.response.status);
             console.error('Response data:', JSON.stringify(error.response.data, null, 2));
         }
         
