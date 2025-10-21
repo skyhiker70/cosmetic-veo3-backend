@@ -1,19 +1,27 @@
 {
-  "name": "cosmetic-video-veo3-backend",
+  "name": "cosmetic-veo3-backend",
   "version": "2.0.0",
-  "description": "Backend API for cosmetic video generation with Google Veo 3",
+  "description": "AI Cosmetic Video Generator using Google Vertex AI Veo 3",
   "main": "server.js",
   "scripts": {
-    "start": "node setup-credentials.js && node server.js",
-    "dev": "node setup-credentials.js && nodemon server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
+  "keywords": [
+    "veo3",
+    "video-generation",
+    "cosmetics",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
     "@google-cloud/vertexai": "^1.7.0",
-    "axios": "^1.6.2",
-    "uuid": "^9.0.1"
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   },
   "engines": {
     "node": ">=18.0.0"

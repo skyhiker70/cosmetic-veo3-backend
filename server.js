@@ -1,76 +1,72 @@
 const express = require('express');
 const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
-require('dotenv').config();
-
-const { generateVideo } = require('./veoGenerator');
+const { generateVeo3Video } = require('./veoGenerator');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
 // Health check
-app.get('/api/health', (req, res) => {
+app.get('/', (req, res) => {
     res.json({ 
-        status: 'ok', 
-        message: 'Veo 3 Video Generator is running',
-        version: '2.0.0'
+        message: 'Cosmetic Video Generator API is running',
+        engine: 'Google Vertex AI Veo 3',
+        status: 'active'
     });
 });
 
-// Main generation endpoint
-app.post('/api/generate', async (req, res) => {
-    const { concept, style, color, mood } = req.body;
-    
-    if (!concept) {
-        return res.status(400).json({ error: 'Concept is required' });
-    }
-
-    const sessionId = uuidv4();
-    console.log(`[${sessionId}] Starting Veo 3 generation for: "${concept}"`);
-    console.log(`[${sessionId}] Style: ${style}, Color: ${color}, Mood: ${mood}`);
-
+// Video generation endpoint
+app.post('/generate-video', async (req, res) => {
     try {
+        const { productName, concept } = req.body;
+
+        // Validation
+        if (!productName || !concept) {
+            return res.status(400).json({ 
+                error: 'productName and concept are required' 
+            });
+        }
+
+        console.log(`📝 Generating video for: ${productName}`);
+        console.log(`💡 Concept: ${concept}`);
+
         // Generate video with Veo 3
-        console.log(`[${sessionId}] Generating video with Veo 3...`);
-        const videoUrl = await generateVideo(concept, style, color, mood, sessionId);
-        
-        console.log(`[${sessionId}] ✅ Video generation completed!`);
-        
+        const videoUrl = await generateVeo3Video(productName, concept);
+
+        console.log(`✅ Video generated successfully`);
+
         res.json({
             success: true,
-            sessionId,
-            videoUrl,
-            concept,
-            style,
-            color,
-            mood,
-            generatedBy: 'Google Veo 3',
-            message: 'Video generated successfully with AI'
+            videoUrl: videoUrl,
+            productName: productName
         });
 
     } catch (error) {
-        console.error(`[${sessionId}] ❌ Error:`, error.message);
+        console.error('❌ Error generating video:', error);
         res.status(500).json({ 
-            error: 'Video generation failed', 
-            message: error.message,
-            sessionId
+            error: error.message || 'Failed to generate video'
         });
     }
 });
 
-// Start server
 app.listen(PORT, () => {
     console.log(`🚀 Veo 3 Video Generator running on port ${PORT}`);
     console.log(`🎬 Using Google Vertex AI Veo 3`);
     
-    if (!process.env.GOOGLE_CLOUD_PROJECT) {
-        console.warn('⚠️  WARNING: GOOGLE_CLOUD_PROJECT not set');
-    }
-    if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-        console.warn('⚠️  WARNING: GOOGLE_APPLICATION_CREDENTIALS not set');
+    // Check environment variables
+    const project = process.env.GOOGLE_CLOUD_PROJECT;
+    const location = process.env.GOOGLE_CLOUD_LOCATION;
+    const hasCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    
+    console.log(`📍 Project: ${project || '❌ NOT SET'}`);
+    console.log(`🌍 Location: ${location || '❌ NOT SET'}`);
+    console.log(`🔑 Credentials: ${hasCredentials ? '✅ SET' : '❌ NOT SET'}`);
+    
+    if (!project || !location || !hasCredentials) {
+        console.warn('⚠️  WARNING: Missing required environment variables!');
+        console.warn('   Please set: GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, GOOGLE_APPLICATION_CREDENTIALS_JSON');
     }
 });

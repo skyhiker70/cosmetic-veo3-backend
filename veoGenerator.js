@@ -1,115 +1,166 @@
 const { VertexAI } = require('@google-cloud/vertexai');
-const axios = require('axios');
 
-// Style definitions for Veo 3 prompts
-const STYLES = {
-    minimal: 'minimalist cinematography, clean aesthetic, white space, elegant and simple',
-    luxury: 'luxury commercial style, premium look, sophisticated lighting, gold accents, high-end feel',
-    natural: 'natural organic look, botanical elements, earthy tones, sustainable aesthetic, soft natural lighting',
-    vibrant: 'vibrant colorful energy, dynamic movement, bold colors, eye-catching visuals'
-};
+// Initialize Vertex AI with credentials from environment
+function initializeVertexAI() {
+    const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+    const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
 
-const COLORS = {
-    nude: 'nude beige color palette, warm neutral tones, natural skin tones',
-    taupe: 'taupe gray tones, warm gray palette, sophisticated neutrals',
-    sage: 'sage green tones, muted green palette, calming natural colors',
-    mauve: 'mauve pink tones, dusty rose palette, soft purple-pink hues',
-    slate: 'slate gray tones, cool gray palette, modern neutral colors',
-    cream: 'cream beige tones, soft ivory palette, warm vanilla hues'
-};
+    if (!projectId) {
+        throw new Error('GOOGLE_CLOUD_PROJECT environment variable is not set');
+    }
 
-async function generateVideo(concept, style, color, mood, sessionId) {
+    if (!credentialsJson) {
+        throw new Error('GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable is not set');
+    }
+
+    let credentials;
     try {
-        // Get credentials from environment
-        const projectId = process.env.GOOGLE_CLOUD_PROJECT;
-        const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
-        
-        if (!projectId) {
-            throw new Error('GOOGLE_CLOUD_PROJECT environment variable not set');
+        credentials = JSON.parse(credentialsJson);
+    } catch (error) {
+        throw new Error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: ' + error.message);
+    }
+
+    console.log('🔧 Initializing Vertex AI...');
+    console.log(`   Project: ${projectId}`);
+    console.log(`   Location: ${location}`);
+    console.log(`   Service Account: ${credentials.client_email || 'unknown'}`);
+
+    const vertexAI = new VertexAI({
+        project: projectId,
+        location: location,
+        googleAuthOptions: {
+            credentials: credentials
         }
+    });
 
-        // Build video prompt
-        const styleDesc = STYLES[style] || STYLES.minimal;
-        const colorDesc = COLORS[color] || COLORS.nude;
-        const moodDesc = mood < 50 ? 'cute, playful, friendly atmosphere' : 'sophisticated, elegant, refined mood';
+    return vertexAI;
+}
 
-        const videoPrompt = `Professional cosmetic product commercial video for ${concept}. 
-${styleDesc}. ${colorDesc}. ${moodDesc}.
-Cinematic 8-second video showing: product hero shot with smooth camera movement, close-up of texture and details, elegant presentation with soft lighting.
-Vertical 9:16 format for Instagram Reels. High quality, professional commercial look, beauty photography style.`;
+// Generate video prompt from product info
+function generateVideoPrompt(productName, concept) {
+    return `Create a luxurious cosmetic product video for "${productName}".
 
-        console.log(`  🎬 Video Prompt: ${videoPrompt.substring(0, 100)}...`);
+Concept: ${concept}
 
-        // Initialize Vertex AI
-        const vertexAI = new VertexAI({
-            project: projectId,
-            location: location
-        });
+Visual style:
+- Premium, high-end aesthetic with soft lighting
+- Elegant product showcase with smooth camera movements
+- Sophisticated color palette matching luxury cosmetics
+- Clean, minimalist background with subtle textures
+- Product should be the focal point with beautiful reflections
+- Cinematic quality with depth of field
+- Soft, dreamy atmosphere
 
-        // Generate video with Veo 3
-        console.log('  📡 Calling Veo 3 API...');
+Camera work:
+- Slow, graceful camera movements
+- Close-up shots revealing product details
+- Elegant panning and rotation
+- Professional product photography style
+
+Mood: Luxurious, elegant, sophisticated, premium beauty brand`;
+}
+
+// Generate video using Veo 3
+async function generateVeo3Video(productName, concept) {
+    try {
+        console.log('🎬 Starting Veo 3 video generation...');
         
-        const generativeModel = vertexAI.preview.getGenerativeModel({
-            model: 'veo-003'
+        const vertexAI = initializeVertexAI();
+        const generativeVisionModel = vertexAI.preview.getGenerativeModel({
+            model: 'veo-001',
         });
+
+        const prompt = generateVideoPrompt(productName, concept);
+        console.log('📝 Prompt created');
 
         const request = {
-            contents: [{
-                role: 'user',
-                parts: [{
-                    text: videoPrompt
-                }]
-            }],
+            contents: [
+                {
+                    role: 'user',
+                    parts: [
+                        {
+                            text: prompt
+                        }
+                    ]
+                }
+            ],
             generationConfig: {
-                temperature: 0.7,
+                temperature: 0.8,
                 topP: 0.95,
-                maxOutputTokens: 1024
             }
         };
 
-        const result = await generativeModel.generateContent(request);
-        const response = result.response;
+        console.log('⏳ Calling Veo 3 API (this may take 2-3 minutes)...');
+        const result = await generativeVisionModel.generateContent(request);
+        
+        console.log('📦 Response received');
         
         // Extract video URL from response
+        const response = result.response;
+        
+        if (!response || !response.candidates || response.candidates.length === 0) {
+            throw new Error('No video generated in response');
+        }
+
+        const candidate = response.candidates[0];
+        
+        // Check for video in different possible locations in the response
         let videoUrl = null;
         
-        if (response.candidates && response.candidates.length > 0) {
-            const candidate = response.candidates[0];
-            if (candidate.content && candidate.content.parts) {
-                for (const part of candidate.content.parts) {
-                    if (part.videoMetadata && part.videoMetadata.videoUri) {
-                        videoUrl = part.videoMetadata.videoUri;
-                        break;
-                    }
-                    // Alternative: check for inline data
-                    if (part.inlineData && part.inlineData.mimeType === 'video/mp4') {
-                        // Return base64 or temporary URL
-                        videoUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                        break;
-                    }
+        // Method 1: Check parts for fileData
+        if (candidate.content && candidate.content.parts) {
+            for (const part of candidate.content.parts) {
+                if (part.fileData && part.fileData.fileUri) {
+                    videoUrl = part.fileData.fileUri;
+                    break;
+                }
+                if (part.videoMetadata && part.videoMetadata.videoUri) {
+                    videoUrl = part.videoMetadata.videoUri;
+                    break;
                 }
             }
         }
 
-        if (!videoUrl) {
-            // Fallback: check response text for URL
-            const responseText = JSON.stringify(response);
-            const urlMatch = responseText.match(/(https?:\/\/[^\s"]+\.mp4)/);
-            if (urlMatch) {
-                videoUrl = urlMatch[1];
-            } else {
-                throw new Error('No video URL found in Veo 3 response');
-            }
+        // Method 2: Check if there's a direct video field
+        if (!videoUrl && candidate.videoUrl) {
+            videoUrl = candidate.videoUrl;
         }
 
-        console.log(`  ✅ Video generated: ${videoUrl.substring(0, 50)}...`);
-        
+        // Method 3: Check metadata
+        if (!videoUrl && response.metadata && response.metadata.videoUrl) {
+            videoUrl = response.metadata.videoUrl;
+        }
+
+        if (!videoUrl) {
+            console.error('Response structure:', JSON.stringify(response, null, 2));
+            throw new Error('Video URL not found in response');
+        }
+
+        console.log('✅ Video URL extracted:', videoUrl);
         return videoUrl;
 
     } catch (error) {
-        console.error('❌ Veo 3 generation failed:', error);
-        throw new Error(`Veo 3 generation failed: ${error.message}`);
+        console.error('❌ Veo 3 generation error:', error);
+        
+        // Provide more specific error messages
+        if (error.message.includes('GOOGLE_CLOUD_PROJECT')) {
+            throw new Error('Google Cloud project ID is not configured. Please set GOOGLE_CLOUD_PROJECT environment variable.');
+        }
+        if (error.message.includes('GOOGLE_APPLICATION_CREDENTIALS_JSON')) {
+            throw new Error('Google Cloud credentials are not configured. Please set GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable.');
+        }
+        if (error.message.includes('permission')) {
+            throw new Error('Permission denied. Please ensure the service account has Vertex AI User role.');
+        }
+        if (error.message.includes('quota')) {
+            throw new Error('API quota exceeded. Please check your Google Cloud quota limits.');
+        }
+        
+        throw new Error(`Veo 3 API error: ${error.message}`);
     }
 }
 
-module.exports = { generateVideo };
+module.exports = {
+    generateVeo3Video
+};
