@@ -1,14 +1,8 @@
-const { VertexAI } = require('@google-cloud/vertexai');
+const { GoogleAuth } = require('google-auth-library');
 
-// Initialize Vertex AI with credentials from environment
-function initializeVertexAI() {
-    const projectId = process.env.GOOGLE_CLOUD_PROJECT;
-    const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
+// Initialize Google Auth with credentials from environment
+function getAuthClient() {
     const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-
-    if (!projectId) {
-        throw new Error('GOOGLE_CLOUD_PROJECT environment variable is not set');
-    }
 
     if (!credentialsJson) {
         throw new Error('GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable is not set');
@@ -21,143 +15,152 @@ function initializeVertexAI() {
         throw new Error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON: ' + error.message);
     }
 
-    console.log('🔧 Initializing Vertex AI...');
-    console.log(`   Project: ${projectId}`);
-    console.log(`   Location: ${location}`);
+    console.log('🔧 Initializing Google Auth...');
     console.log(`   Service Account: ${credentials.client_email || 'unknown'}`);
 
-    const vertexAI = new VertexAI({
-        project: projectId,
-        location: location,
-        googleAuthOptions: {
-            credentials: credentials
-        }
+    const auth = new GoogleAuth({
+        credentials: credentials,
+        scopes: ['https://www.googleapis.com/auth/cloud-platform']
     });
 
-    return vertexAI;
+    return auth;
 }
 
 // Generate video prompt from product info
 function generateVideoPrompt(productName, concept) {
     return `Create a luxurious cosmetic product video for "${productName}".
 
-Concept: ${concept}
+${concept}
 
-Visual style:
-- Premium, high-end aesthetic with soft lighting
-- Elegant product showcase with smooth camera movements
-- Sophisticated color palette matching luxury cosmetics
-- Clean, minimalist background with subtle textures
-- Product should be the focal point with beautiful reflections
-- Cinematic quality with depth of field
-- Soft, dreamy atmosphere
+Visual style: Premium high-end aesthetic with soft lighting, elegant product showcase with smooth camera movements, sophisticated color palette matching luxury cosmetics, clean minimalist background with subtle textures, product as focal point with beautiful reflections, cinematic quality with depth of field, soft dreamy atmosphere.
 
-Camera work:
-- Slow, graceful camera movements
-- Close-up shots revealing product details
-- Elegant panning and rotation
-- Professional product photography style
+Camera work: Slow graceful movements, close-up shots revealing product details, elegant panning and rotation, professional product photography style.
 
-Mood: Luxurious, elegant, sophisticated, premium beauty brand`;
+Mood: Luxurious, elegant, sophisticated, premium beauty brand.`;
 }
 
-// Generate video using Veo 3
+// Poll operation status
+async function pollOperation(auth, projectId, location, operationId, maxAttempts = 60) {
+    const client = await auth.getClient();
+    const modelId = 'veo-3.1-generate-preview';
+    const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:fetchPredictOperation`;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            const response = await client.request({
+                url: url,
+                method: 'POST',
+                data: {
+                    operationName: operationId
+                }
+            });
+
+            const data = response.data;
+            
+            if (data.done) {
+                console.log('✅ Operation completed');
+                
+                if (data.response && data.response.videos && data.response.videos.length > 0) {
+                    const videoUrl = data.response.videos[0].gcsUri;
+                    console.log('🎬 Video URL:', videoUrl);
+                    return videoUrl;
+                }
+                
+                throw new Error('No video in response');
+            }
+
+            console.log(`⏳ Attempt ${attempt + 1}/${maxAttempts}: Still generating...`);
+            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+            
+        } catch (error) {
+            if (attempt === maxAttempts - 1) {
+                throw error;
+            }
+            console.log(`⚠️ Polling error (attempt ${attempt + 1}), retrying...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+    }
+
+    throw new Error('Video generation timed out');
+}
+
+// Generate video using Veo 3.1
 async function generateVeo3Video(productName, concept) {
     try {
-        console.log('🎬 Starting Veo 3 video generation...');
+        console.log('🎬 Starting Veo 3.1 video generation...');
         
-        const vertexAI = initializeVertexAI();
-        const generativeVisionModel = vertexAI.preview.getGenerativeModel({
-            model: 'veo-3.1-generate-preview',
-        });
+        const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+        const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
 
+        if (!projectId) {
+            throw new Error('GOOGLE_CLOUD_PROJECT environment variable is not set');
+        }
+
+        const auth = getAuthClient();
+        const client = await auth.getClient();
+        
         const prompt = generateVideoPrompt(productName, concept);
         console.log('📝 Prompt created');
 
-        const request = {
-            contents: [
+        const modelId = 'veo-3.1-generate-preview';
+        const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:predictLongRunning`;
+
+        const requestBody = {
+            instances: [
                 {
-                    role: 'user',
-                    parts: [
-                        {
-                            text: prompt
-                        }
-                    ]
+                    prompt: prompt
                 }
             ],
-            generationConfig: {
-                temperature: 0.8,
-                topP: 0.95,
+            parameters: {
+                sampleCount: 1,
+                aspectRatio: "16:9",
+                personGeneration: "allow_adult"
             }
         };
 
-        console.log('⏳ Calling Veo 3 API (this may take 2-3 minutes)...');
-        const result = await generativeVisionModel.generateContent(request);
-        
-        console.log('📦 Response received');
-        
-        // Extract video URL from response
-        const response = result.response;
-        
-        if (!response || !response.candidates || response.candidates.length === 0) {
-            throw new Error('No video generated in response');
-        }
+        console.log('📡 Sending request to Veo 3.1 API...');
+        const response = await client.request({
+            url: url,
+            method: 'POST',
+            data: requestBody
+        });
 
-        const candidate = response.candidates[0];
+        const operationName = response.data.name;
+        console.log('✅ Request accepted, operation:', operationName);
+
+        // Extract operation ID
+        const operationId = operationName;
         
-        // Check for video in different possible locations in the response
-        let videoUrl = null;
-        
-        // Method 1: Check parts for fileData
-        if (candidate.content && candidate.content.parts) {
-            for (const part of candidate.content.parts) {
-                if (part.fileData && part.fileData.fileUri) {
-                    videoUrl = part.fileData.fileUri;
-                    break;
-                }
-                if (part.videoMetadata && part.videoMetadata.videoUri) {
-                    videoUrl = part.videoMetadata.videoUri;
-                    break;
-                }
-            }
-        }
+        console.log('⏳ Polling for completion (this takes 2-3 minutes)...');
+        const videoUrl = await pollOperation(auth, projectId, location, operationId);
 
-        // Method 2: Check if there's a direct video field
-        if (!videoUrl && candidate.videoUrl) {
-            videoUrl = candidate.videoUrl;
-        }
-
-        // Method 3: Check metadata
-        if (!videoUrl && response.metadata && response.metadata.videoUrl) {
-            videoUrl = response.metadata.videoUrl;
-        }
-
-        if (!videoUrl) {
-            console.error('Response structure:', JSON.stringify(response, null, 2));
-            throw new Error('Video URL not found in response');
-        }
-
-        console.log('✅ Video URL extracted:', videoUrl);
         return videoUrl;
 
     } catch (error) {
-        console.error('❌ Veo 3 generation error:', error);
+        console.error('❌ Veo 3.1 generation error:', error);
+        
+        if (error.response) {
+            console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+        }
         
         // Provide more specific error messages
         if (error.message.includes('GOOGLE_CLOUD_PROJECT')) {
-            throw new Error('Google Cloud project ID is not configured. Please set GOOGLE_CLOUD_PROJECT environment variable.');
+            throw new Error('Google Cloud project ID is not configured');
         }
         if (error.message.includes('GOOGLE_APPLICATION_CREDENTIALS_JSON')) {
-            throw new Error('Google Cloud credentials are not configured. Please set GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable.');
+            throw new Error('Google Cloud credentials are not configured');
         }
-        if (error.message.includes('permission')) {
-            throw new Error('Permission denied. Please ensure the service account has Vertex AI User role.');
+        if (error.message.includes('403') || error.message.includes('permission')) {
+            throw new Error('Permission denied. Please ensure Vertex AI API is enabled and service account has Vertex AI User role');
+        }
+        if (error.message.includes('404')) {
+            throw new Error('Veo 3.1 model not found. Please ensure you have access to Veo 3.1 preview');
         }
         if (error.message.includes('quota')) {
-            throw new Error('API quota exceeded. Please check your Google Cloud quota limits.');
+            throw new Error('API quota exceeded');
         }
         
-        throw new Error(`Veo 3 API error: ${error.message}`);
+        throw new Error(`Veo 3.1 API error: ${error.message}`);
     }
 }
 
