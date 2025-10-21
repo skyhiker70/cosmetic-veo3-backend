@@ -68,7 +68,7 @@ async function generateVeo3Video(productName, concept) {
         
         const vertexAI = initializeVertexAI();
         const generativeVisionModel = vertexAI.preview.getGenerativeModel({
-            model: 'veo-001',
+            model: 'veo-3.1-generate-preview',
         });
 
         const prompt = generateVideoPrompt(productName, concept);
